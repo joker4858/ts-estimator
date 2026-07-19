@@ -31,3 +31,9 @@ android/*.iml
 
 # Log files
 *.log
+
+# Web build output
+www/
+
+# Build assets
+build-assets/

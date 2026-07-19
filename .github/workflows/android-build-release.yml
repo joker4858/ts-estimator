@@ -31,6 +31,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Build Web Assets (Copy to www)
+        run: npm run build
+
+      - name: Sync Capacitor with Android
+        run: npx cap sync
+
       - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:

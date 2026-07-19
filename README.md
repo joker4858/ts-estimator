@@ -46,9 +46,9 @@ Proyek ini dibangun menggunakan **HTML, CSS, Javascript (Vanilla)**, serta **Cap
    ```bash
    npm install
    ```
-3. Lakukan sinkronisasi Capacitor dengan Android:
+3. Bangun aset web dan lakukan sinkronisasi dengan Android:
    ```bash
-   npx cap sync
+   npm run sync
    ```
 4. Buka proyek Android di Android Studio:
    ```bash

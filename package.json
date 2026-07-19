@@ -7,6 +7,8 @@
     "lib": "lib"
   },
   "scripts": {
+    "build": "node build.js",
+    "sync": "npm run build && npx cap sync",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
