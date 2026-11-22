@@ -128,9 +128,19 @@
                     <h3 class="section-title">3. Aksi Solver</h3>
                     <div class="action-grid">
                         <button class="btn btn-primary" id="btn-solve">🤖 Selesaikan Parameter</button>
-                        <button class="btn" id="btn-copy">📋 Salin Profil Driver (Markdown)</button>
-                        <button class="btn" id="btn-download">💾 Unduh Berkas Driver (.txt)</button>
+                        <button class="btn" id="btn-copy" disabled>📋 Salin Profil Driver (Markdown)</button>
+                        <button class="btn" id="btn-download" disabled>💾 Unduh Berkas Driver (.txt)</button>
                         <button class="btn" id="btn-reset">🔄 Reset Semua Input</button>
+                    </div>
+                </div>
+
+                <!-- SEKSI 4: HASIL EBP -->
+                <div class="panel-section" id="ebp-result" style="display: none;">
+                    <h3 class="section-title">4. Hasil Estimasi</h3>
+                    <p class="section-desc">EBP (Efficiency Bandwidth Product) = Fs / Qes.</p>
+                    <div class="input-field">
+                        <label>EBP</label>
+                        <div id="ebp-value" style="font-size: 1.2rem; font-weight: 700; color: var(--accent-cyan);">--</div>
                     </div>
                 </div>
             </div>

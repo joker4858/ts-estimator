@@ -29,7 +29,10 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Run Solver Tests
+        run: npm test
 
       - name: Build Web Assets (Copy to www)
         run: npm run build

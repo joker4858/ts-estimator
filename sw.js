@@ -1,4 +1,4 @@
-const CACHE_NAME = 'joker-acoustics-v1';
+const CACHE_NAME = 'joker-acoustics-v2';
 const ASSETS = [
   './',
   './index.html',

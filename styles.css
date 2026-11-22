@@ -302,3 +302,17 @@ input.auto-value {
 .toast-success {
     border-color: var(--accent-cyan);
 }
+
+/* Tombol nonaktif (sebelum solve pertama berhasil) */
+.btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+    background: #0d1017;
+    border-color: var(--border-color);
+    color: var(--text-primary);
+    transform: none;
+    box-shadow: none;
+}

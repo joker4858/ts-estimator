@@ -1,5 +1,17 @@
 // acoustics-studio/frontend/app.js
 // Joker Acoustics Studio — Client-Side TS Estimator
+//
+// v1.8.1 (Julio, atas perintah Naga — keputusan 7 arah 2026-11-22):
+//  - Perbaikan solver v1 (laporan-uji-solver.md): Mms diturunkan dari Fs+Cms,
+//    cek residu akhir, penyesuaian input dicatat.
+//  - Solver dipisah jadi computeEstimates() murni (tanpa DOM) agar bisa
+//    diuji otomatis di Node — lihat test/solver.test.js.
+//  - EBP ditampilkan di layar (seksi Hasil Estimasi, index.html).
+//  - Klasifikasi box DIHAPUS dari semua output (di luar scope komponen
+//    driver, keputusan Naga 2026-11-22 19:04 WIB).
+//  - Tombol Salin/Unduh nonaktif sampai solve pertama berhasil.
+//  - Salin punya fallback bila navigator.clipboard tidak tersedia.
+// File ini drop-in replacement untuk app.js di repo (v1.8.1).
 
 // ─── DATABASE RATA-RATA UNIVERSAL ──────────────────────────────────────────
 const UNIVERSAL_AVERAGES = {
@@ -46,23 +58,27 @@ const state = {
     powerRMS: null,
     Fs: null, Re: null, Sd: null, Qms: null, Qes: null, Qts: null,
     Vas: null, Mms: null, BL: null, Cms: null, Le: null, Xmax: null,
-    EBP: null, boxClass: "--"
+    EBP: null,
+    solved: false,
+    notes: []
 };
 
-// Inisialisasi Aplikasi
-document.addEventListener("DOMContentLoaded", () => {
-    setupEventListeners();
-});
+// Inisialisasi Aplikasi (dilewati saat berkas dimuat di Node untuk pengujian)
+if (typeof document !== "undefined") {
+    document.addEventListener("DOMContentLoaded", () => {
+        setupEventListeners();
+    });
+}
 
 // ─── LOGICAL T/S SOLVER (MURNI JAVASCRIPT) ──────────────────────────────────
 function solveTSEquations(p) {
     let changed = true;
     let iterations = 0;
-    
+
     while (changed && iterations < 20) {
         changed = false;
         iterations++;
-        
+
         // 1. Relasi Qts, Qes, Qms: Qts = (Qms * Qes) / (Qms + Qes)
         if (p.Qts !== null && p.Qms !== null && p.Qes === null) {
             if (p.Qms > p.Qts && p.Qts > 0) {
@@ -84,7 +100,7 @@ function solveTSEquations(p) {
             }
         }
 
-        // 2. Relasi Vas, Cms, Sd: Vas = 1.38826 * Cms * Sd^2 / 1000 (Cms dalam SI m/N)
+        // 2. Relasi Vas, Cms, Sd: Vas(L) = 1.38826 * Cms(SI m/N) * Sd(cm^2)^2
         if (p.Vas !== null && p.Sd !== null && p.Cms === null) {
             if (p.Sd > 0) {
                 p.Cms = parseFloat((p.Vas / (1.38826 * Math.pow(p.Sd, 2))).toFixed(7));
@@ -157,82 +173,65 @@ function solveTSEquations(p) {
     return p;
 }
 
-// ─── PROSES CALCULATE / SOLVE UTAMA ─────────────────────────────────────────
-function triggerSolve(updateUIFields = true) {
-    const nominalDiaEl = document.getElementById("ts-nominal-dia");
-    const driverTypeEl = document.getElementById("ts-driver-type");
-    
-    let isValid = true;
-    
-    if (!nominalDiaEl.value) {
-        nominalDiaEl.classList.add("input-error");
-        isValid = false;
-    } else {
-        nominalDiaEl.classList.remove("input-error");
-    }
-    
-    if (!driverTypeEl.value) {
-        driverTypeEl.classList.add("input-error");
-        isValid = false;
-    } else {
-        driverTypeEl.classList.remove("input-error");
-    }
-
-    if (!isValid) {
-        showToast("Nominal Diameter dan Jenis Driver wajib diisi!", "error");
-        return;
-    }
-
-    // Ambil input parameter umum
-    const nominalDia = parseFloat(nominalDiaEl.value) || null;
-    const driverType = driverTypeEl.value || "woofer";
-    const impedance = parseFloat(document.getElementById("ts-impedance").value) || null;
-    const powerRMS = parseFloat(document.getElementById("ts-power-rms").value) || null;
-
-    // Ambil input TS yang ditulis user
+// ─── ESTIMASI MURNI (tanpa DOM — bisa diuji di Node) ────────────────────────
+// input: {nominalDia, driverType, impedance, powerRMS,
+//         Fs, Re, Sd, Qms, Qes, Qts, Vas, Mms, BL, Cms, Le, Xmax}
+//   - Cms dalam SI (m/N); pemanggil dari UI mengonversi mm/N -> SI.
+//   - Nilai null = tidak diketahui (akan diisi solver / rata-rata).
+// output: {...parameter akhir, EBP, notes, size}
+function computeEstimates(input) {
     const p = {
-        Fs: parseFloat(document.getElementById("ts-fs").value) || null,
-        Re: parseFloat(document.getElementById("ts-re").value) || null,
-        Sd: parseFloat(document.getElementById("ts-sd").value) || null,
-        Qms: parseFloat(document.getElementById("ts-qms").value) || null,
-        Qes: parseFloat(document.getElementById("ts-qes").value) || null,
-        Qts: parseFloat(document.getElementById("ts-qts").value) || null,
-        Vas: parseFloat(document.getElementById("ts-vas").value) || null,
-        Mms: parseFloat(document.getElementById("ts-mms").value) || null,
-        BL: parseFloat(document.getElementById("ts-bl").value) || null,
-        Cms: parseFloat(document.getElementById("ts-cms").value) * 0.001 || null, // UI mm/N -> SI m/N
-        Le: parseFloat(document.getElementById("ts-le").value) || null,
-        Xmax: parseFloat(document.getElementById("ts-xmax").value) || null,
+        Fs: input.Fs ?? null,
+        Re: input.Re ?? null,
+        Sd: input.Sd ?? null,
+        Qms: input.Qms ?? null,
+        Qes: input.Qes ?? null,
+        Qts: input.Qts ?? null,
+        Vas: input.Vas ?? null,
+        Mms: input.Mms ?? null,
+        BL: input.BL ?? null,
+        Cms: input.Cms ?? null,
+        Le: input.Le ?? null,
+        Xmax: input.Xmax ?? null,
     };
-
-    // Track field mana saja yang auto
-    const isAuto = {};
-    tsFields.forEach(field => {
-        const el = document.getElementById(`ts-${field}`);
-        isAuto[field] = !el.value || el.classList.contains("auto-value");
-    });
+    const nominalDia = input.nominalDia ?? null;
+    const driverType = input.driverType || "woofer";
+    const impedance = input.impedance ?? null;
 
     for (let k in p) {
         if (p[k] !== null && p[k] <= 0) p[k] = null;
     }
 
     // ─── VALIDASI & PRE-KONDISI HARMONISASI FISIK ───────────────────────────
+    // Penyesuaian terhadap input pengguna DICATAT di solverNotes (ditampilkan
+    // di UI dan ikut dalam export), tidak lagi dilakukan diam-diam.
+    const solverNotes = [];
     // 1. Harmonisasi Qts, Qes, Qms agar tidak bertabrakan secara matematis
     if (p.Qms !== null && p.Qes !== null) {
-        p.Qts = parseFloat(((p.Qms * p.Qes) / (p.Qms + p.Qes)).toFixed(4));
+        const qtsCalc = parseFloat(((p.Qms * p.Qes) / (p.Qms + p.Qes)).toFixed(4));
+        if (p.Qts !== null && Math.abs(p.Qts - qtsCalc) > 0.005) {
+            solverNotes.push(`Qts disesuaikan ${p.Qts} → ${qtsCalc} agar konsisten dengan Qms/Qes.`);
+        }
+        p.Qts = qtsCalc;
     } else if (p.Qes !== null && p.Qts !== null) {
         if (p.Qts >= p.Qes) {
-            p.Qts = parseFloat((p.Qes * 0.85).toFixed(3)); // Paksa Qts < Qes
+            const qtsAdj = parseFloat((p.Qes * 0.85).toFixed(3));
+            solverNotes.push(`Qts ${p.Qts} tidak mungkin (≥ Qes) — disesuaikan menjadi ${qtsAdj}.`);
+            p.Qts = qtsAdj; // Paksa Qts < Qes
         }
     } else if (p.Qms !== null && p.Qts !== null) {
         if (p.Qts >= p.Qms) {
-            p.Qts = parseFloat((p.Qms * 0.85).toFixed(3)); // Paksa Qts < Qms
+            const qtsAdj = parseFloat((p.Qms * 0.85).toFixed(3));
+            solverNotes.push(`Qts ${p.Qts} tidak mungkin (≥ Qms) — disesuaikan menjadi ${qtsAdj}.`);
+            p.Qts = qtsAdj; // Paksa Qts < Qms
         }
     }
 
     // 2. Harmonisasi Re vs Impedansi nominal
     if (impedance !== null && p.Re !== null && p.Re >= impedance) {
-        p.Re = parseFloat((impedance * 0.72).toFixed(2));
+        const reAdj = parseFloat((impedance * 0.72).toFixed(2));
+        solverNotes.push(`Re ${p.Re} Ω tidak mungkin (≥ impedansi nominal) — disesuaikan menjadi ${reAdj} Ω.`);
+        p.Re = reAdj;
     }
 
     // ─── INTERNAL HEURISTIC SIZE CLASSIFIER ─────────────────────────────────
@@ -258,6 +257,9 @@ function triggerSolve(updateUIFields = true) {
     // Ambil database rata-rata berdasarkan jenis driver dan estimasi ukuran
     const categoryAverages = UNIVERSAL_AVERAGES[driverType] || UNIVERSAL_AVERAGES.woofer;
     const averages = categoryAverages[size] || categoryAverages[15];
+    if (!categoryAverages[size]) {
+        solverNotes.push(`Diameter ${size}" tidak ada di tabel rata-rata — memakai baris 15" sebagai pendekatan.`);
+    }
 
     // Step 1: Jalankan solver pertama kali
     let res = solveTSEquations({ ...p });
@@ -266,27 +268,28 @@ function triggerSolve(updateUIFields = true) {
     if (res.Fs === null) res.Fs = averages.Fs;
     if (res.Qms === null) res.Qms = averages.Qms;
     if (res.Qes === null) res.Qes = averages.Qes;
-    
+
     // Estimasi Re
     if (res.Re === null) {
         res.Re = impedance ? parseFloat((impedance * 0.72).toFixed(2)) : averages.Re;
     }
-    
+
     // Estimasi Sd (Menggunakan factor 0.85 untuk merepresentasikan area efektif cone sesungguhnya)
     if (res.Sd === null) {
         if (nominalDia) {
             const d_mm = nominalDia * 25.4;
-            const d_eff = d_mm * 0.85; 
+            const d_eff = d_mm * 0.85;
             res.Sd = parseFloat((Math.PI * Math.pow(d_eff / 2, 2) / 100).toFixed(1));
         } else {
             res.Sd = averages.Sd;
         }
     }
-    
+
     if (res.Vas === null && res.Cms === null) res.Vas = averages.Vas;
-    if (res.Mms === null && res.Cms === null) {
-        res.Mms = parseFloat((res.Sd * 0.18).toFixed(1));
-    }
+    // Mms TIDAK lagi diisi dari heuristik Sd*0.18 (terbukti meleset +74% pada
+    // woofer nyata dan membuat himpunan akhir inkonsisten). Mms diturunkan
+    // dari Fs+Cms pada langkah "Asuransi akhir" di bawah — selalu bisa, karena
+    // Fs (pengguna/tabel) dan Cms (pengguna/Vas+Sd) selalu tersedia.
     if (res.Le === null) res.Le = averages.Le;
     if (res.Xmax === null) res.Xmax = averages.Xmax;
 
@@ -317,6 +320,24 @@ function triggerSolve(updateUIFields = true) {
         res.BL = parseFloat(Math.sqrt((2.0 * Math.PI * res.Fs * res.Mms * 0.001 * res.Re) / res.Qes).toFixed(2));
     }
 
+    // ─── CEK RESIDU AKHIR (himpunan estimasi harus konsisten secara internal) ─
+    // Hitung ulang Fs dan Vas dari parameter akhir; bila selisih > 5% berarti
+    // ada input yang saling bertentangan — beri peringatan, jangan diam.
+    if (res.Mms > 0 && res.Cms > 0 && res.Sd > 0) {
+        const fsImplied = 1.0 / (2.0 * Math.PI * Math.sqrt(res.Mms * 0.001 * res.Cms));
+        const vasImplied = 1.38826 * res.Cms * Math.pow(res.Sd, 2);
+        const qtsImplied = (res.Qms * res.Qes) / (res.Qms + res.Qes);
+        if (res.Fs > 0 && Math.abs(fsImplied - res.Fs) / res.Fs > 0.05) {
+            solverNotes.push(`Peringatan: Fs ${res.Fs} Hz tidak konsisten dengan Mms+Cms (tersirat ${fsImplied.toFixed(1)} Hz) — periksa kembali data input.`);
+        }
+        if (res.Vas > 0 && Math.abs(vasImplied - res.Vas) / res.Vas > 0.05) {
+            solverNotes.push(`Peringatan: Vas ${res.Vas} L tidak konsisten dengan Cms+Sd (tersirat ${vasImplied.toFixed(1)} L) — periksa kembali data input.`);
+        }
+        if (res.Qts > 0 && Math.abs(qtsImplied - res.Qts) / res.Qts > 0.05) {
+            solverNotes.push(`Peringatan: Qts ${res.Qts} tidak konsisten dengan Qms/Qes (tersirat ${qtsImplied.toFixed(4)}).`);
+        }
+    }
+
     // ─── DEFENSIVE SANITY CHECK (Mencegah nilai negatif, NaN, Infinity) ─────
     const finalKeys = ["Fs", "Re", "Sd", "Qms", "Qes", "Qts", "Vas", "Mms", "BL", "Cms", "Le", "Xmax"];
     finalKeys.forEach(k => {
@@ -326,8 +347,74 @@ function triggerSolve(updateUIFields = true) {
         }
     });
 
+    // EBP = Fs / Qes — angka turunan TS, ditampilkan di layar dan export.
+    // (Klasifikasi box sengaja TIDAK dihitung: di luar scope komponen driver.)
     res.EBP = parseFloat((res.Fs / res.Qes).toFixed(2));
-    res.boxClass = (res.EBP < 50) ? "Sealed Box" : (res.EBP <= 100) ? "Vented (Ported)" : "Horn / Reflex";
+
+    return { ...res, EBP: res.EBP, notes: solverNotes, size };
+}
+
+// ─── PROSES CALCULATE / SOLVE UTAMA (pembungkus DOM di atas computeEstimates) ─
+function triggerSolve(updateUIFields = true) {
+    const nominalDiaEl = document.getElementById("ts-nominal-dia");
+    const driverTypeEl = document.getElementById("ts-driver-type");
+
+    let isValid = true;
+
+    if (!nominalDiaEl.value) {
+        nominalDiaEl.classList.add("input-error");
+        isValid = false;
+    } else {
+        nominalDiaEl.classList.remove("input-error");
+    }
+
+    if (!driverTypeEl.value) {
+        driverTypeEl.classList.add("input-error");
+        isValid = false;
+    } else {
+        driverTypeEl.classList.remove("input-error");
+    }
+
+    if (!isValid) {
+        showToast("Nominal Diameter dan Jenis Driver wajib diisi!", "error");
+        return;
+    }
+
+    // Ambil input parameter umum
+    const nominalDia = parseFloat(nominalDiaEl.value) || null;
+    const driverType = driverTypeEl.value || "woofer";
+    const impedance = parseFloat(document.getElementById("ts-impedance").value) || null;
+    const powerRMS = parseFloat(document.getElementById("ts-power-rms").value) || null;
+
+    // Ambil input TS yang ditulis user (Cms UI mm/N -> SI m/N)
+    const input = {
+        nominalDia,
+        driverType,
+        impedance,
+        powerRMS,
+        Fs: parseFloat(document.getElementById("ts-fs").value) || null,
+        Re: parseFloat(document.getElementById("ts-re").value) || null,
+        Sd: parseFloat(document.getElementById("ts-sd").value) || null,
+        Qms: parseFloat(document.getElementById("ts-qms").value) || null,
+        Qes: parseFloat(document.getElementById("ts-qes").value) || null,
+        Qts: parseFloat(document.getElementById("ts-qts").value) || null,
+        Vas: parseFloat(document.getElementById("ts-vas").value) || null,
+        Mms: parseFloat(document.getElementById("ts-mms").value) || null,
+        BL: parseFloat(document.getElementById("ts-bl").value) || null,
+        Cms: parseFloat(document.getElementById("ts-cms").value) * 0.001 || null,
+        Le: parseFloat(document.getElementById("ts-le").value) || null,
+        Xmax: parseFloat(document.getElementById("ts-xmax").value) || null,
+    };
+
+    // Track field mana saja yang auto
+    const isAuto = {};
+    tsFields.forEach(field => {
+        const el = document.getElementById(`ts-${field}`);
+        isAuto[field] = !el.value || el.classList.contains("auto-value");
+    });
+
+    // Hitung (logika murni — sama persis dengan yang diuji test/solver.test.js)
+    const res = computeEstimates(input);
 
     // Simpan ke global state
     Object.assign(state, {
@@ -336,12 +423,14 @@ function triggerSolve(updateUIFields = true) {
         powerRMS,
         ...res
     });
-    
+    state.notes = res.notes;
+    state.solved = true;
+
     if (updateUIFields) {
         tsFields.forEach(field => {
             const el = document.getElementById(`ts-${field}`);
             let stateVal = state[fieldMap[field]];
-            
+
             if (stateVal !== null && stateVal !== undefined) {
                 // Konversi Cms kembali ke mm/N untuk display UI
                 if (field === "cms") {
@@ -356,6 +445,32 @@ function triggerSolve(updateUIFields = true) {
             }
         });
     }
+
+    updateEbpDisplay();
+    setExportEnabled(true);
+    renderSolverNotes();
+}
+
+// ─── TAMPILAN HASIL EBP ─────────────────────────────────────────────────────
+function updateEbpDisplay() {
+    const box = document.getElementById("ebp-result");
+    const val = document.getElementById("ebp-value");
+    if (!box || !val) return;
+    if (state.solved && state.EBP) {
+        val.textContent = state.EBP;
+        box.style.display = "flex";
+    } else {
+        val.textContent = "--";
+        box.style.display = "none";
+    }
+}
+
+// ─── TOMBOL EXPORT AKTIF HANYA SETELAH SOLVE ───────────────────────────────
+function setExportEnabled(enabled) {
+    ["btn-copy", "btn-download"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !enabled;
+    });
 }
 
 // ─── EVENT BINDINGS ────────────────────────────────────────────────────────
@@ -369,7 +484,35 @@ function clearAutoCalculatedFields() {
         }
     });
     state.EBP = null;
-    state.boxClass = "--";
+    state.solved = false;
+    // Hasil solve sudah kedaluwarsa begitu input berubah.
+    state.notes = [];
+    updateEbpDisplay();
+    setExportEnabled(false);
+    renderSolverNotes();
+}
+
+// ─── TAMPILAN CATATAN & PERINGATAN SOLVER ─────────────────────────────────
+// Kotak dibuat dinamis (tanpa mengubah index.html); tampil hanya bila ada isi.
+function renderSolverNotes() {
+    let box = document.getElementById("solver-notes");
+    if (!box) {
+        const container = document.querySelector("#solver-card .scrollable-content");
+        if (!container) return;
+        box = document.createElement("div");
+        box.id = "solver-notes";
+        box.style.cssText = "margin:10px 0;padding:10px 12px;border-left:3px solid var(--accent-orange, #f90);background:rgba(255,255,255,0.04);border-radius:8px;font-size:13px;line-height:1.5;";
+        container.appendChild(box);
+    }
+    const notes = state.notes || [];
+    if (!notes.length) {
+        box.style.display = "none";
+        box.innerHTML = "";
+        return;
+    }
+    box.style.display = "block";
+    box.innerHTML = "<strong>Catatan solver</strong><ul style=\"margin:6px 0 0;padding-left:18px;\">" +
+        notes.map(n => `<li>${n}</li>`).join("") + "</ul>";
 }
 
 function setupEventListeners() {
@@ -396,10 +539,13 @@ function setupEventListeners() {
         }
     });
 
+    // Tombol export nonaktif sampai solve pertama berhasil.
+    setExportEnabled(false);
+
     document.getElementById("btn-solve").addEventListener("click", () => {
         triggerSolve(true);
     });
-    
+
     document.getElementById("btn-reset").addEventListener("click", () => {
         const inputs = document.querySelectorAll("input[type='number']");
         inputs.forEach(inp => {
@@ -420,26 +566,36 @@ function setupEventListeners() {
             state[fieldMap[field]] = null;
         });
         state.EBP = null;
-        state.boxClass = "--";
+        state.solved = false;
+        state.notes = [];
+        updateEbpDisplay();
+        setExportEnabled(false);
+        renderSolverNotes();
     });
-    
+
     document.getElementById("btn-copy").addEventListener("click", () => {
         const text = generateMarkdown();
-        navigator.clipboard.writeText(text).then(() => {
-            showToast("Profil Driver berhasil disalin ke Clipboard!", "success");
-        }).catch(err => {
+        const done = () => showToast("Profil Driver berhasil disalin ke Clipboard!", "success");
+        const fail = (err) => {
             console.error("Gagal menyalin: ", err);
-        });
+            showToast("Gagal menyalin — coba Unduh Berkas Driver.", "error");
+        };
+        // navigator.clipboard tidak tersedia di file:// / non-HTTPS — pakai fallback.
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done, fail));
+        } else {
+            fallbackCopy(text, done, fail);
+        }
     });
-    
+
     document.getElementById("btn-download").addEventListener("click", () => {
         const text = generateMarkdown();
         const name = prompt("Nama File (misal: 15-Legacy-Subwoofer):", "Custom-Driver");
         if (!name) return;
-        
+
         const sanitizedName = name.replace(/[^a-zA-Z0-9\-_]/g, "_");
         const fileName = `${sanitizedName}.txt`;
-        
+
         // Cek lingkungan native Capacitor
         if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
             const { Filesystem, Share } = window.Capacitor.Plugins;
@@ -461,7 +617,7 @@ function setupEventListeners() {
                 return;
             }
         }
-        
+
         if (navigator.share) {
             try {
                 const file = new File([text], fileName, { type: "text/plain" });
@@ -480,9 +636,27 @@ function setupEventListeners() {
                 console.error("Gagal menggunakan Share API, fallback ke download:", e);
             }
         }
-        
+
         fallbackDownload(text, fileName);
     });
+}
+
+// Fallback salin untuk konteks tanpa Clipboard API (file://, HTTP biasa).
+function fallbackCopy(text, done, fail) {
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) done();
+        else fail(new Error("execCommand mengembalikan false"));
+    } catch (err) {
+        fail(err);
+    }
 }
 
 function fallbackDownload(text, fileName) {
@@ -498,10 +672,13 @@ function generateMarkdown() {
     const driverTypeEl = document.getElementById("ts-driver-type");
     const driverTypeLabel = driverTypeEl ? driverTypeEl.options[driverTypeEl.selectedIndex].text : "Woofer / Mid-Bass";
     const cmsVal = state.Cms ? (state.Cms * 1000).toFixed(3) : "--";
+    const notesVal = (state.notes && state.notes.length)
+        ? `\n**Catatan solver:**\n${state.notes.map(n => `- ${n}`).join("\n")}\n`
+        : "";
     const text = `# Custom Speaker Driver (Estimated Profile)
 
 **Diameter Nominal:** ${state.nominalDia ? state.nominalDia + '"' : "--"} | **Jenis Driver:** ${driverTypeLabel} | **Impedansi:** ${state.impedance ? state.impedance + ' Ohm' : "--"} | **Daya RMS:** ${state.powerRMS ? state.powerRMS + ' W' : "--"}
-**EBP:** ${state.EBP || "--"} | **Klasifikasi Box:** ${state.boxClass || "--"}
+**EBP:** ${state.EBP || "--"}
 
 | Parameter | Nilai | Keterangan |
 |---|---|---|
@@ -517,7 +694,7 @@ function generateMarkdown() {
 | Mms | ${state.Mms || "--"} g | (Estimated/Solved) |
 | BL | ${state.BL || "--"} T.m | (Estimated/Solved) |
 | Cms | ${cmsVal} mm/N | (Estimated/Solved) |
-
+${notesVal}
 **Estimator:** Joker Acoustics Studio Offline TS Estimator
 `;
     return text;
@@ -532,24 +709,28 @@ function showToast(message, type = "error") {
         container.className = "toast-container";
         document.body.appendChild(container);
     }
-    
+
     const icon = type === "success" ? "✅" : "⚠️";
     container.className = `toast-container toast-${type}`;
     container.innerHTML = `
         <span class="toast-icon">${icon}</span>
         <span class="toast-msg">${message}</span>
     `;
-    
+
     // Trigger slide-in
     setTimeout(() => {
         container.classList.add("show");
     }, 10);
-    
+
     // Hide and slide-out after 3s
     setTimeout(() => {
         container.classList.remove("show");
     }, 3000);
 }
 
-// Trigger build: 2026-07-12 #7
+// Ekspor untuk pengujian Node (tanpa DOM); diabaikan di browser.
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { solveTSEquations, computeEstimates, UNIVERSAL_AVERAGES };
+}
 
+// Trigger build: 2026-07-12 #7
